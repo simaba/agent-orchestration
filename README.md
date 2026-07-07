@@ -30,6 +30,7 @@ Do **not** start here if you want runnable behavior. Use [`agent-simulator`](htt
 |---|---|
 | [`templates/orchestration-pattern-card.md`](templates/orchestration-pattern-card.md) | Documenting a reusable orchestration pattern with agents, flow, decisions, failure controls, logging, and evaluation criteria |
 | [`examples/confidence-gated-fallback-pattern.md`](examples/confidence-gated-fallback-pattern.md) | Filled example for a confidence-gated fallback workflow |
+| [`docs/structured-voting.md`](docs/structured-voting.md) | Deciding when majority vote is appropriate and what context, abstention, and escalation behavior it requires |
 
 ---
 
@@ -58,7 +59,7 @@ Do **not** start here if you want runnable behavior. Use [`agent-simulator`](htt
 | Pattern | When to Use | Description |
 |---|---|---|
 | **Validator Agent** | High-stakes outputs | Separate agent reviews and approves outputs before use |
-| **Majority Vote** | Uncertain tasks | Run the same task across N agents and accept the majority result |
+| **Majority Vote** | Bounded labels or structured verdicts | Aggregate independent responses only when all agents use the same explicit decision space |
 | **Cross-Check** | Critical calculations | Two independent agents solve the same problem and divergence is flagged |
 | **Confidence Gate** | Variable certainty | Only accept outputs above a threshold and escalate the rest |
 
@@ -75,6 +76,8 @@ Do **not** start here if you want runnable behavior. Use [`agent-simulator`](htt
 ---
 
 ## Implementation examples
+
+These snippets are **pseudocode**. They show control-flow choices, not production-ready authentication, retries, observability, authorization, data handling, or safety controls.
 
 ### Hierarchical delegation (Python pseudocode)
 
@@ -111,23 +114,52 @@ class OrchestratorAgent:
         return {"status": "pending_human_review", "reason": reason}
 ```
 
-### Majority vote (Python pseudocode)
+### Majority vote for structured verdicts (Python pseudocode)
 
 ```python
 from collections import Counter
 
-def majority_vote(agents, task, n_votes=3):
-    """Run task across N agents and return the majority answer."""
-    responses = [agent.run(task) for agent in agents[:n_votes]]
-    vote_counts = Counter(r["answer"] for r in responses)
-    winner, count = vote_counts.most_common(1)[0]
+def majority_vote(agents, task, allowed_labels, expected_votes=3):
+    """Aggregate bounded labels; escalate on error, abstention, tie, or low agreement."""
+    responses = [agent.run(task) for agent in agents[:expected_votes]]
+    valid = [
+        response
+        for response in responses
+        if response.get("status") == "valid"
+        and response.get("label") in allowed_labels
+    ]
 
-    confidence = count / n_votes
-    if confidence < 0.67:
-        return {"answer": winner, "confidence": confidence, "escalate": True}
+    if len(valid) != expected_votes:
+        return {
+            "status": "pending_human_review",
+            "reason": "insufficient valid votes",
+            "valid_votes": len(valid),
+            "expected_votes": expected_votes,
+        }
 
-    return {"answer": winner, "confidence": confidence, "escalate": False}
+    counts = Counter(response["label"] for response in valid)
+    winner, winner_count = counts.most_common(1)[0]
+    tied = list(counts.values()).count(winner_count) > 1
+    agreement = winner_count / len(valid)
+
+    if tied or agreement < 0.67:
+        return {
+            "status": "pending_human_review",
+            "reason": "tie or insufficient agreement",
+            "vote_counts": dict(counts),
+            "agreement": agreement,
+        }
+
+    return {
+        "status": "accepted_for_next_control",
+        "label": winner,
+        "vote_counts": dict(counts),
+        "agreement": agreement,
+        "note": "A vote is a workflow signal, not proof of correctness or approval.",
+    }
 ```
+
+Use this pattern only with an explicit label set and a documented independence assumption. For free-form answers, semantic aggregation and an accountable review path are usually more appropriate. See [`docs/structured-voting.md`](docs/structured-voting.md).
 
 ---
 
